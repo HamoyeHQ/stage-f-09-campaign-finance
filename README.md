@@ -1,18 +1,8 @@
-# Weather in Szeged 2006-2016
+# Campaign Finance versus Election Results
+**Inspiration**
+How much of an impact does campaign spending and fundraising have on an election? Is the impact greater in certain areas? Given this dataset, to what degree of accuracy could we have predicted the election results?
+
 **Content**
-The CSV file includes a hourly/daily summary for Szeged, Hungary area, between 2006 and 2016.
 
-Data available in the hourly response:
-
-time
-summary
-precipType
-temperature
-apparentTemperature
-humidity
-windSpeed
-windBearing
-visibility
-loudCover
-pressure
-[Here is a link to the dataset](https://www.kaggle.com/budincsevity/szeged-weather)
+Each row represents a candidate, with information on their campaign including the state, district, office, total contributions, total expenditures, etc. The content is specific to the year leading up to the 2016 election: (1/1/2015 through 10/19/2016)
+[Here is a link to the dataset](https://www.kaggle.com/danerbland/electionfinance)
