@@ -1,0 +1,189 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: campaign-finance-pipeline-
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.0.4, pipelines.kubeflow.org/pipeline_compilation_time: '2020-10-31T09:51:52.610005',
+    pipelines.kubeflow.org/pipeline_spec: '{"description": "A classification pipeline
+      that performs predictions on electoral results.", "inputs": [{"name": "data_path",
+      "type": "String"}, {"name": "model_file", "type": "String"}], "name": "Campaign
+      finance pipeline"}'}
+  labels: {pipelines.kubeflow.org/kfp_sdk_version: 1.0.4}
+spec:
+  entrypoint: campaign-finance-pipeline
+  templates:
+  - name: campaign-finance-pipeline
+    inputs:
+      parameters:
+      - {name: data_path}
+      - {name: model_file}
+    dag:
+      tasks:
+      - name: predict
+        template: predict
+        arguments:
+          parameters:
+          - {name: data_path, value: '{{inputs.parameters.data_path}}'}
+          - {name: model_file, value: '{{inputs.parameters.model_file}}'}
+      - name: train
+        template: train
+        arguments:
+          parameters:
+          - {name: data_path, value: '{{inputs.parameters.data_path}}'}
+          - {name: model_file, value: '{{inputs.parameters.model_file}}'}
+  - name: predict
+    container:
+      args: [--data-path, '{{inputs.parameters.data_path}}', --model-file, '{{inputs.parameters.model_file}}']
+      command:
+      - python3
+      - -u
+      - -c
+      - |
+        def predict(data_path, model_file):
+          import tensorflow as tf
+          import numpy as np
+          import pandas as pd
+          from sklearn.model_selection import train_test_split
+
+          data = "https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv"
+          df = pd.read_csv(data)
+
+          X = df[['can_off_dis', 'can_zip', 'ind_con', 'net_ope_exp', 'tot_con',
+               'tot_dis', 'net_con', 'ope_exp', 'tot_rec', 'can_off_id', 'can_nam_id',
+               'can_off_sta_id', 'can_par_aff_id', 'can_inc_cha_ope_sea_id',
+               'can_cit_id', 'can_sta_id', 'cov_dur']]
+          y = df[['winner_id']]
+
+          #Perform train test split on the data
+          X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=921)
+
+          #Load saved model
+          classifier = tf.keras.models.load_model('/content/gdrive/My Drive/saved_model')
+          test_loss, test_acc = classifier.evaluate(X_test,  y_test, verbose=0)
+          print('Test accuracy:', test_acc)
+          from tensorflow.python.lib.io import file_io
+          import json
+
+            # Exports a sample tensorboard:
+          metadata = {
+              'outputs' : [{
+                'type': 'tensorboard',
+                'source': 'gs://ml-pipeline-dataset/tensorboard-train',
+              }]
+            }
+
+            # Exports two sample metrics:
+          metrics = {
+              'metrics': [{
+                  'name': 'Test_Accuracy',
+                  'numberValue':  float(test_acc),
+                }]}
+
+          from collections import namedtuple
+          predict_output = namedtuple('Test_Accuracy', ['Test_Accuracy', 'mlpipeline_ui_metadata', 'mlpipeline_metrics'])
+          return predict_output(test_acc, json.dumps(metadata), json.dumps(metrics))
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Predict', description='')
+        _parser.add_argument("--data-path", dest="data_path", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--model-file", dest="model_file", type=str, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = predict(**_parsed_args)
+      image: tensorflow/tensorflow:latest-gpu-py3
+    inputs:
+      parameters:
+      - {name: data_path}
+      - {name: model_file}
+    metadata:
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--data-path", {"inputValue": "data_path"}, "--model-file", {"inputValue":
+          "model_file"}], "command": ["python3", "-u", "-c", "def predict(data_path,
+          model_file):\n  import tensorflow as tf\n  import numpy as np\n  import
+          pandas as pd\n  from sklearn.model_selection import train_test_split\n\n  data
+          = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\n  df
+          = pd.read_csv(data)\n\n  X = df[[''can_off_dis'', ''can_zip'', ''ind_con'',
+          ''net_ope_exp'', ''tot_con'',\n       ''tot_dis'', ''net_con'', ''ope_exp'',
+          ''tot_rec'', ''can_off_id'', ''can_nam_id'',\n       ''can_off_sta_id'',
+          ''can_par_aff_id'', ''can_inc_cha_ope_sea_id'',\n       ''can_cit_id'',
+          ''can_sta_id'', ''cov_dur'']]\n  y = df[[''winner_id'']]\n\n  #Perform train
+          test split on the data\n  X_train, X_test, y_train, y_test = train_test_split(X,
+          y, test_size=0.2, random_state=921)\n\n  #Load saved model\n  classifier
+          = tf.keras.models.load_model(''/content/gdrive/My Drive/saved_model'')\n  test_loss,
+          test_acc = classifier.evaluate(X_test,  y_test, verbose=0)\n  print(''Test
+          accuracy:'', test_acc)\n  from tensorflow.python.lib.io import file_io\n  import
+          json\n\n    # Exports a sample tensorboard:\n  metadata = {\n      ''outputs''
+          : [{\n        ''type'': ''tensorboard'',\n        ''source'': ''gs://ml-pipeline-dataset/tensorboard-train'',\n      }]\n    }\n\n    #
+          Exports two sample metrics:\n  metrics = {\n      ''metrics'': [{\n          ''name'':
+          ''Test_Accuracy'',\n          ''numberValue'':  float(test_acc),\n        }]}\n\n  from
+          collections import namedtuple\n  predict_output = namedtuple(''Test_Accuracy'',
+          [''Test_Accuracy'', ''mlpipeline_ui_metadata'', ''mlpipeline_metrics''])\n  return
+          predict_output(test_acc, json.dumps(metadata), json.dumps(metrics))\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Predict'', description='''')\n_parser.add_argument(\"--data-path\",
+          dest=\"data_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
+          dest=\"model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
+          = vars(_parser.parse_args())\n\n_outputs = predict(**_parsed_args)\n"],
+          "image": "tensorflow/tensorflow:latest-gpu-py3"}}, "inputs": [{"name": "data_path"},
+          {"name": "model_file"}], "name": "Predict"}', pipelines.kubeflow.org/component_ref: '{}'}
+  - name: train
+    container:
+      args: [--data-path, '{{inputs.parameters.data_path}}', --model-file, '{{inputs.parameters.model_file}}']
+      command:
+      - python3
+      - -u
+      - -c
+      - "def train(data_path, model_file):\n  import numpy as np\n  import pandas\
+        \ as pd\n  from sklearn.model_selection import train_test_split\n  import\
+        \ tensorflow as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\
+        \n  df = pd.read_csv(data)\n\n  X = df[['can_off_dis', 'can_zip', 'ind_con',\
+        \ 'net_ope_exp', 'tot_con',\n       'tot_dis', 'net_con', 'ope_exp', 'tot_rec',\
+        \ 'can_off_id', 'can_nam_id',\n       'can_off_sta_id', 'can_par_aff_id',\
+        \ 'can_inc_cha_ope_sea_id',\n       'can_cit_id', 'can_sta_id', 'cov_dur']]\n\
+        \  y = df[['winner_id']]\n\n  #Perform train test split on the data\n  X_train,\
+        \ X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=101)\n\
+        \n  #Define the model \n  model  = tf.keras.Sequential([\n               \
+        \ tf.keras.layers.Flatten(input_shape=(1,17)),\n                tf.keras.layers.Dense(8,\
+        \ activation = 'relu'),\n                tf.keras.layers.Dense(1, activation\
+        \ = 'sigmoid')\n  ])\n\n  model.compile(optimizer = 'adam', loss='binary_crossentropy',\
+        \ metrics =['accuracy'])\n\n  num_epochs = 170\n\n  history = model.fit(X_train,\
+        \ y_train, epochs = num_epochs,\n                    validation_data = (X_test,y_test))\n\
+        \n  #Save the model\n  model.save('/content/gdrive/My Drive/saved_model')\n\
+        \nimport argparse\n_parser = argparse.ArgumentParser(prog='Train', description='')\n\
+        _parser.add_argument(\"--data-path\", dest=\"data_path\", type=str, required=True,\
+        \ default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\", dest=\"\
+        model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args\
+        \ = vars(_parser.parse_args())\n\n_outputs = train(**_parsed_args)\n"
+      image: tensorflow/tensorflow:latest-gpu-py3
+    inputs:
+      parameters:
+      - {name: data_path}
+      - {name: model_file}
+    metadata:
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--data-path", {"inputValue": "data_path"}, "--model-file", {"inputValue":
+          "model_file"}], "command": ["python3", "-u", "-c", "def train(data_path,
+          model_file):\n  import numpy as np\n  import pandas as pd\n  from sklearn.model_selection
+          import train_test_split\n  import tensorflow as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\n  df
+          = pd.read_csv(data)\n\n  X = df[[''can_off_dis'', ''can_zip'', ''ind_con'',
+          ''net_ope_exp'', ''tot_con'',\n       ''tot_dis'', ''net_con'', ''ope_exp'',
+          ''tot_rec'', ''can_off_id'', ''can_nam_id'',\n       ''can_off_sta_id'',
+          ''can_par_aff_id'', ''can_inc_cha_ope_sea_id'',\n       ''can_cit_id'',
+          ''can_sta_id'', ''cov_dur'']]\n  y = df[[''winner_id'']]\n\n  #Perform train
+          test split on the data\n  X_train, X_test, y_train, y_test = train_test_split(X,
+          y, test_size=0.2, random_state=101)\n\n  #Define the model \n  model  =
+          tf.keras.Sequential([\n                tf.keras.layers.Flatten(input_shape=(1,17)),\n                tf.keras.layers.Dense(8,
+          activation = ''relu''),\n                tf.keras.layers.Dense(1, activation
+          = ''sigmoid'')\n  ])\n\n  model.compile(optimizer = ''adam'', loss=''binary_crossentropy'',
+          metrics =[''accuracy''])\n\n  num_epochs = 170\n\n  history = model.fit(X_train,
+          y_train, epochs = num_epochs,\n                    validation_data = (X_test,y_test))\n\n  #Save
+          the model\n  model.save(''/content/gdrive/My Drive/saved_model'')\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Train'', description='''')\n_parser.add_argument(\"--data-path\",
+          dest=\"data_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
+          dest=\"model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
+          = vars(_parser.parse_args())\n\n_outputs = train(**_parsed_args)\n"], "image":
+          "tensorflow/tensorflow:latest-gpu-py3"}}, "inputs": [{"name": "data_path"},
+          {"name": "model_file"}], "name": "Train"}', pipelines.kubeflow.org/component_ref: '{}'}
+  arguments:
+    parameters:
+    - {name: data_path}
+    - {name: model_file}
+  serviceAccountName: pipeline-runner
