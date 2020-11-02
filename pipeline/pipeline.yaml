@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: campaign-finance-pipeline-
-  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.0.4, pipelines.kubeflow.org/pipeline_compilation_time: '2020-10-31T09:51:52.610005',
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.0.4, pipelines.kubeflow.org/pipeline_compilation_time: '2020-11-01T23:54:53.615244',
     pipelines.kubeflow.org/pipeline_spec: '{"description": "A classification pipeline
       that performs predictions on electoral results.", "inputs": [{"name": "data_path",
       "type": "String"}, {"name": "model_file", "type": "String"}], "name": "Campaign
@@ -18,18 +18,52 @@ spec:
       - {name: model_file}
     dag:
       tasks:
+      - {name: create-volume, template: create-volume}
       - name: predict
         template: predict
+        dependencies: [create-volume, train]
         arguments:
           parameters:
+          - {name: create-volume-name, value: '{{tasks.create-volume.outputs.parameters.create-volume-name}}'}
           - {name: data_path, value: '{{inputs.parameters.data_path}}'}
           - {name: model_file, value: '{{inputs.parameters.model_file}}'}
+      - name: print-prediction
+        template: print-prediction
+        dependencies: [create-volume, predict]
+        arguments:
+          parameters:
+          - {name: create-volume-name, value: '{{tasks.create-volume.outputs.parameters.create-volume-name}}'}
+          - {name: data_path, value: '{{inputs.parameters.data_path}}'}
       - name: train
         template: train
+        dependencies: [create-volume]
         arguments:
           parameters:
+          - {name: create-volume-name, value: '{{tasks.create-volume.outputs.parameters.create-volume-name}}'}
           - {name: data_path, value: '{{inputs.parameters.data_path}}'}
           - {name: model_file, value: '{{inputs.parameters.model_file}}'}
+  - name: create-volume
+    resource:
+      action: create
+      manifest: |
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: '{{workflow.name}}-data-volume'
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+    outputs:
+      parameters:
+      - name: create-volume-manifest
+        valueFrom: {jsonPath: '{}'}
+      - name: create-volume-name
+        valueFrom: {jsonPath: '{.metadata.name}'}
+      - name: create-volume-size
+        valueFrom: {jsonPath: '{.status.capacity.storage}'}
   - name: predict
     container:
       args: [--data-path, '{{inputs.parameters.data_path}}', --model-file, '{{inputs.parameters.model_file}}']
@@ -39,48 +73,31 @@ spec:
       - -c
       - |
         def predict(data_path, model_file):
-          import tensorflow as tf
-          import numpy as np
-          import pandas as pd
-          from sklearn.model_selection import train_test_split
 
-          data = "https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv"
-          df = pd.read_csv(data)
+            import pickle
+            import tensorflow as tf
+            from tensorflow import keras
+            import numpy as np
 
-          X = df[['can_off_dis', 'can_zip', 'ind_con', 'net_ope_exp', 'tot_con',
-               'tot_dis', 'net_con', 'ope_exp', 'tot_rec', 'can_off_id', 'can_nam_id',
-               'can_off_sta_id', 'can_par_aff_id', 'can_inc_cha_ope_sea_id',
-               'can_cit_id', 'can_sta_id', 'cov_dur']]
-          y = df[['winner_id']]
+            # Load the saved Keras model
+            classifier = keras.models.load_model(f'{data_path}/{model_file}')
 
-          #Perform train test split on the data
-          X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=921)
+            # Load and unpack the test_data
+            with open(f'{data_path}/test_data','rb') as f:
+                test_data = pickle.load(f)
+            # Separate the X_test from y_test.
+            X_test,  y_test = test_data
 
-          #Load saved model
-          classifier = tf.keras.models.load_model('/content/gdrive/My Drive/saved_model')
-          test_loss, test_acc = classifier.evaluate(X_test,  y_test, verbose=0)
-          print('Test accuracy:', test_acc)
-          from tensorflow.python.lib.io import file_io
-          import json
+            # make predictions.
+            y_pred = classifier.predict(X_test)
 
-            # Exports a sample tensorboard:
-          metadata = {
-              'outputs' : [{
-                'type': 'tensorboard',
-                'source': 'gs://ml-pipeline-dataset/tensorboard-train',
-              }]
-            }
+            # create a threshold
+            y_pred=(y_pred>0.5)
 
-            # Exports two sample metrics:
-          metrics = {
-              'metrics': [{
-                  'name': 'Test_Accuracy',
-                  'numberValue':  float(test_acc),
-                }]}
+            with open(f'{data_path}/result.txt', 'w') as result:
+                result.write(" Prediction: {}, Actual: {} ".format(y_pred,y_test.astype(np.bool)))
 
-          from collections import namedtuple
-          predict_output = namedtuple('Test_Accuracy', ['Test_Accuracy', 'mlpipeline_ui_metadata', 'mlpipeline_metrics'])
-          return predict_output(test_acc, json.dumps(metadata), json.dumps(metrics))
+            print('Prediction has be saved successfully!')
 
         import argparse
         _parser = argparse.ArgumentParser(prog='Predict', description='')
@@ -90,40 +107,49 @@ spec:
 
         _outputs = predict(**_parsed_args)
       image: tensorflow/tensorflow:latest-gpu-py3
+      volumeMounts:
+      - {mountPath: '{{inputs.parameters.data_path}}', name: create-volume}
     inputs:
       parameters:
+      - {name: create-volume-name}
       - {name: data_path}
       - {name: model_file}
+    volumes:
+    - name: create-volume
+      persistentVolumeClaim: {claimName: '{{inputs.parameters.create-volume-name}}'}
     metadata:
       annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
           {"args": ["--data-path", {"inputValue": "data_path"}, "--model-file", {"inputValue":
           "model_file"}], "command": ["python3", "-u", "-c", "def predict(data_path,
-          model_file):\n  import tensorflow as tf\n  import numpy as np\n  import
-          pandas as pd\n  from sklearn.model_selection import train_test_split\n\n  data
-          = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\n  df
-          = pd.read_csv(data)\n\n  X = df[[''can_off_dis'', ''can_zip'', ''ind_con'',
-          ''net_ope_exp'', ''tot_con'',\n       ''tot_dis'', ''net_con'', ''ope_exp'',
-          ''tot_rec'', ''can_off_id'', ''can_nam_id'',\n       ''can_off_sta_id'',
-          ''can_par_aff_id'', ''can_inc_cha_ope_sea_id'',\n       ''can_cit_id'',
-          ''can_sta_id'', ''cov_dur'']]\n  y = df[[''winner_id'']]\n\n  #Perform train
-          test split on the data\n  X_train, X_test, y_train, y_test = train_test_split(X,
-          y, test_size=0.2, random_state=921)\n\n  #Load saved model\n  classifier
-          = tf.keras.models.load_model(''/content/gdrive/My Drive/saved_model'')\n  test_loss,
-          test_acc = classifier.evaluate(X_test,  y_test, verbose=0)\n  print(''Test
-          accuracy:'', test_acc)\n  from tensorflow.python.lib.io import file_io\n  import
-          json\n\n    # Exports a sample tensorboard:\n  metadata = {\n      ''outputs''
-          : [{\n        ''type'': ''tensorboard'',\n        ''source'': ''gs://ml-pipeline-dataset/tensorboard-train'',\n      }]\n    }\n\n    #
-          Exports two sample metrics:\n  metrics = {\n      ''metrics'': [{\n          ''name'':
-          ''Test_Accuracy'',\n          ''numberValue'':  float(test_acc),\n        }]}\n\n  from
-          collections import namedtuple\n  predict_output = namedtuple(''Test_Accuracy'',
-          [''Test_Accuracy'', ''mlpipeline_ui_metadata'', ''mlpipeline_metrics''])\n  return
-          predict_output(test_acc, json.dumps(metadata), json.dumps(metrics))\n\nimport
-          argparse\n_parser = argparse.ArgumentParser(prog=''Predict'', description='''')\n_parser.add_argument(\"--data-path\",
-          dest=\"data_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
+          model_file):\n\n    import pickle\n    import tensorflow as tf\n    from
+          tensorflow import keras\n    import numpy as np\n\n    # Load the saved
+          Keras model\n    classifier = keras.models.load_model(f''{data_path}/{model_file}'')\n\n    #
+          Load and unpack the test_data\n    with open(f''{data_path}/test_data'',''rb'')
+          as f:\n        test_data = pickle.load(f)\n    # Separate the X_test from
+          y_test.\n    X_test,  y_test = test_data\n\n    # make predictions.\n    y_pred
+          = classifier.predict(X_test)\n\n    # create a threshold\n    y_pred=(y_pred>0.5)\n\n    with
+          open(f''{data_path}/result.txt'', ''w'') as result:\n        result.write(\"
+          Prediction: {}, Actual: {} \".format(y_pred,y_test.astype(np.bool)))\n\n    print(''Prediction
+          has be saved successfully!'')\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Predict'',
+          description='''')\n_parser.add_argument(\"--data-path\", dest=\"data_path\",
+          type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
           dest=\"model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
           = vars(_parser.parse_args())\n\n_outputs = predict(**_parsed_args)\n"],
           "image": "tensorflow/tensorflow:latest-gpu-py3"}}, "inputs": [{"name": "data_path"},
           {"name": "model_file"}], "name": "Predict"}', pipelines.kubeflow.org/component_ref: '{}'}
+  - name: print-prediction
+    container:
+      args: [cat, '{{inputs.parameters.data_path}}/result.txt']
+      image: library/bash:4.4.23
+      volumeMounts:
+      - {mountPath: '{{inputs.parameters.data_path}}', name: create-volume}
+    inputs:
+      parameters:
+      - {name: create-volume-name}
+      - {name: data_path}
+    volumes:
+    - name: create-volume
+      persistentVolumeClaim: {claimName: '{{inputs.parameters.create-volume-name}}'}
   - name: train
     container:
       args: [--data-path, '{{inputs.parameters.data_path}}', --model-file, '{{inputs.parameters.model_file}}']
@@ -131,9 +157,9 @@ spec:
       - python3
       - -u
       - -c
-      - "def train(data_path, model_file):\n  import numpy as np\n  import pandas\
-        \ as pd\n  from sklearn.model_selection import train_test_split\n  import\
-        \ tensorflow as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\
+      - "def train(data_path, model_file):\n  import pickle\n  import numpy as np\n\
+        \  import pandas as pd\n  from sklearn.model_selection import train_test_split\n\
+        \  import tensorflow as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\
         \n  df = pd.read_csv(data)\n\n  X = df[['can_off_dis', 'can_zip', 'ind_con',\
         \ 'net_ope_exp', 'tot_con',\n       'tot_dis', 'net_con', 'ope_exp', 'tot_rec',\
         \ 'can_off_id', 'can_nam_id',\n       'can_off_sta_id', 'can_par_aff_id',\
@@ -146,23 +172,32 @@ spec:
         \ = 'sigmoid')\n  ])\n\n  model.compile(optimizer = 'adam', loss='binary_crossentropy',\
         \ metrics =['accuracy'])\n\n  num_epochs = 170\n\n  history = model.fit(X_train,\
         \ y_train, epochs = num_epochs,\n                    validation_data = (X_test,y_test))\n\
-        \n  #Save the model\n  model.save('/content/gdrive/My Drive/saved_model')\n\
-        \nimport argparse\n_parser = argparse.ArgumentParser(prog='Train', description='')\n\
-        _parser.add_argument(\"--data-path\", dest=\"data_path\", type=str, required=True,\
-        \ default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\", dest=\"\
-        model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args\
-        \ = vars(_parser.parse_args())\n\n_outputs = train(**_parsed_args)\n"
+        \n  #Save the model to the designated \n  model.save(f'{data_path}/{model_file}')\n\
+        \n  #Save the test_data as a pickle file to be used by the predict component.\n\
+        \  with open(f'{data_path}/test_data', 'wb') as f:\n      pickle.dump((X_test,\
+        \  y_test), f)\n\nimport argparse\n_parser = argparse.ArgumentParser(prog='Train',\
+        \ description='')\n_parser.add_argument(\"--data-path\", dest=\"data_path\"\
+        , type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"\
+        --model-file\", dest=\"model_file\", type=str, required=True, default=argparse.SUPPRESS)\n\
+        _parsed_args = vars(_parser.parse_args())\n\n_outputs = train(**_parsed_args)\n"
       image: tensorflow/tensorflow:latest-gpu-py3
+      volumeMounts:
+      - {mountPath: '{{inputs.parameters.data_path}}', name: create-volume}
     inputs:
       parameters:
+      - {name: create-volume-name}
       - {name: data_path}
       - {name: model_file}
+    volumes:
+    - name: create-volume
+      persistentVolumeClaim: {claimName: '{{inputs.parameters.create-volume-name}}'}
     metadata:
       annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
           {"args": ["--data-path", {"inputValue": "data_path"}, "--model-file", {"inputValue":
           "model_file"}], "command": ["python3", "-u", "-c", "def train(data_path,
-          model_file):\n  import numpy as np\n  import pandas as pd\n  from sklearn.model_selection
-          import train_test_split\n  import tensorflow as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\n  df
+          model_file):\n  import pickle\n  import numpy as np\n  import pandas as
+          pd\n  from sklearn.model_selection import train_test_split\n  import tensorflow
+          as tf\n\n  data = \"https://raw.githubusercontent.com/Fitzpatrique/stage-f-09-campaign-finance/master/data/new_project_data2.csv\"\n  df
           = pd.read_csv(data)\n\n  X = df[[''can_off_dis'', ''can_zip'', ''ind_con'',
           ''net_ope_exp'', ''tot_con'',\n       ''tot_dis'', ''net_con'', ''ope_exp'',
           ''tot_rec'', ''can_off_id'', ''can_nam_id'',\n       ''can_off_sta_id'',
@@ -175,9 +210,12 @@ spec:
           = ''sigmoid'')\n  ])\n\n  model.compile(optimizer = ''adam'', loss=''binary_crossentropy'',
           metrics =[''accuracy''])\n\n  num_epochs = 170\n\n  history = model.fit(X_train,
           y_train, epochs = num_epochs,\n                    validation_data = (X_test,y_test))\n\n  #Save
-          the model\n  model.save(''/content/gdrive/My Drive/saved_model'')\n\nimport
-          argparse\n_parser = argparse.ArgumentParser(prog=''Train'', description='''')\n_parser.add_argument(\"--data-path\",
-          dest=\"data_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
+          the model to the designated \n  model.save(f''{data_path}/{model_file}'')\n\n  #Save
+          the test_data as a pickle file to be used by the predict component.\n  with
+          open(f''{data_path}/test_data'', ''wb'') as f:\n      pickle.dump((X_test,  y_test),
+          f)\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Train'',
+          description='''')\n_parser.add_argument(\"--data-path\", dest=\"data_path\",
+          type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-file\",
           dest=\"model_file\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
           = vars(_parser.parse_args())\n\n_outputs = train(**_parsed_args)\n"], "image":
           "tensorflow/tensorflow:latest-gpu-py3"}}, "inputs": [{"name": "data_path"},
